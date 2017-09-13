@@ -1,0 +1,57 @@
+Option Compare Database
+Option Explicit
+
+Private Sub ClarityUserID_AfterUpdate()
+  If IsNull(Me.ClarityUserID) Then
+    MsgBox "Please Enter the Clarity User ID", vbExclamation, "Clarity User ID"
+  Else
+    Me.REIUserID = Me.ClarityUserID
+  End If
+End Sub
+
+Private Sub ClarityUserPwd_AfterUpdate()
+  If IsNull(Me.ClarityUserPwd) Then
+    MsgBox "Clarity Password is Required", vbCritical, "Clarity Password"
+  Else
+    Me.REIUserPwd = Me.ClarityUserPwd
+  End If
+
+End Sub
+
+Private Sub cmdLogOn_Click()
+On Error GoTo Err_cmdLogOn_Click
+
+  If IsNull(Me.ClarityUserPwd) Then
+    MsgBox "Clarity Password is Required", vbCritical, "Clarity Password"
+    Exit Sub
+  End If
+
+  If IsNull(Me.REIUserPwd) Then
+    MsgBox "REI Password is Required", vbCritical, "REI Password"
+    Exit Sub
+  End If
+
+  pubUserID = Me.ClarityUserID
+  pubUserPwd = Me.ClarityUserPwd
+  pubServer = Me.ClarityServer
+
+  pubREIUserID = Me.REIUserID
+  pubREIUserPwd = Me.REIUserPwd
+  pubREIServer = Me.REIServer
+
+DoCmd.Close
+
+Exit_cmdLogOn_Click:
+    Exit Sub
+
+Err_cmdLogOn_Click:
+    MsgBox Err.Description
+    Resume Exit_cmdLogOn_Click
+    
+End Sub
+
+Private Sub REIUserPwd_AfterUpdate()
+  If IsNull(Me.REIUserID) Then
+    MsgBox "Please Enter the REI User ID", vbExclamation, "REI User ID"
+  End If
+End Sub

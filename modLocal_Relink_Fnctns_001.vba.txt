@@ -1,0 +1,1523 @@
+Option Compare Database
+Option Explicit
+
+    Dim dlg                 As clsCommonDlg
+    Dim db                  As DAO.Database
+    Dim tblDef              As DAO.TableDef, strTableList
+
+    Dim strDialogFileDisp   As String   ' Files displayed in dialog drop-down
+    Dim strFormat           As String   ' Specific file format name (e.g. dBase 5.0)
+    Dim strPathFileName     As String   ' Path & file name returned from dialog
+    Dim strPath             As String   ' Path returned from dialog
+    Dim strFileName         As String   ' File name returned from dialog
+    Dim strSource           As String   ' Source of Import,Export & Link operations
+
+    Dim intDPos             As Integer
+    Dim intFiltIndx         As Integer  ' Dialog index number
+
+    Dim TF                  As Boolean  ' Include field names True/False
+
+    Dim varExcelType        As Variant  ' Version of Excel being processed
+    Dim varTransferType     As Variant  ' Transfer type (e.g. acImport, acExportDelim)
+
+    Public Declare Function SHGetSpecialFolderLocation Lib "shell32" _
+                            (ByVal hwnd As Long, ByVal nFolder As Long, ppidl As Long) As Long
+            
+    Public Declare Function SHGetPathFromIDList Lib "shell32" _
+                            Alias "SHGetPathFromIDListA" _
+                            (ByVal pidl As Long, ByVal pszPath As String) As Long
+                            
+    Public Declare Sub CoTaskMemFree Lib "ole32" (ByVal pvoid As Long)
+
+
+    '|==========================================================================
+    '| PROCEDURE  : GetFileName
+    '| DATE/TIME  : 4/27/2003 08:52
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Returns file name and extension from a path string.
+    '|==========================================================================
+
+Public Function GetFileName(strInputPath As String) As String
+
+    Dim strDelimiter    As String
+    
+    If strInputPath = "" Then
+    
+        GoTo ExitHere
+        
+    Else
+    
+        strDelimiter = "\"
+        GetFileName = Words(strInputPath, -1, strDelimiter)
+        
+    End If
+    
+    GoTo ExitHere
+    
+ExitHere:
+
+     Exit Function
+    
+End Function
+
+
+    '|==========================================================================
+    '| PROCEDURE  : GetFileExt
+    '| DATE/TIME  : 5/30/2006 06:27
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Returns file extension from a path or file name string.
+    '|--------------------------------------------------------------------------
+    '| NOTES      : GetFileExt("CrftWhse.dbf") = ".dbf"
+    '|              GetFileExt("C:\Data\Lists\CrftWhse.dbf") = ".dbf"
+    '|==========================================================================
+
+Public Function GetFileExt(strInputPath As String) As String
+
+    Dim intI As Integer
+    Dim intLen As Integer
+    
+    intLen = Len(strInputPath)
+    
+    For intI = intLen - 1 To 1 Step -1
+    
+        If Mid(strInputPath, intI, 1) = "." Then
+        
+            GetFileExt = Mid(strInputPath, intI)
+            Exit For
+            GoTo ExitHere
+            
+        End If
+        
+    Next intI
+    
+ExitHere:
+
+    Exit Function
+    
+End Function
+
+
+    '|==========================================================================
+    '| PROCEDURE  : InList
+    '| DATE/TIME  : 12/8/2002 08:19
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Compares varTestValue input string (or expression) to an
+    '|              input list of values and returns "True" if any listed values
+    '|              match the varTestValue input value or expression.
+    '|--------------------------------------------------------------------------
+    '| PARAMETERS : varTestVal = Input value or expression.
+    '|              varVals() = Array of values to use in comparison.
+    '|--------------------------------------------------------------------------
+    '| NOTES      : InList(8, 1,2,,4,5,6,9,0) = False
+    '|              InList(8, 1,2,3,5,6,7,8,0) = True
+    '|==========================================================================
+
+Public Function InList(ByVal varTestVal As Variant, _
+                        ParamArray Vals() As Variant) As Boolean
+  
+    Dim varVal As Variant
+  
+    For Each varVal In Vals
+    
+        If varTestVal = varVal Then
+    
+            InList = True
+            GoTo ExitHere
+  
+        End If
+  
+    Next
+    
+    GoTo ExitHere
+
+ExitHere:
+
+    Exit Function
+
+End Function
+
+
+    '|==========================================================================
+    '| PROCEDURE  : GetDlgFileInfo
+    '| DATE/TIME  : 11/3/2002 10:15
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Displays a Save File dialog for the user to name or select
+    '|              a file to export the tblWorking table to. It then puts path,
+    '|              filename, file format and an export fields Y/N flag in the
+    '|              ztblParameters table.
+    '|--------------------------------------------------------------------------
+    '| PARAMETERS : strDialogType:   "Import", "Export", "Link" & "TextOut"
+    '|              strOpenIn:       Initial directory displayed when dialog opens
+    '|              strInitFileName: Initial File Name (will work with wildcards)
+    '|              strFileType:     "Access", "dBase", "Excel", "Text", "Image",
+    '|                               "Icon", "Font", "Help", "Executable" or "All"
+    '|==========================================================================
+
+Public Function GetDlgFileInfo(Optional strDlgType As String, _
+                                Optional strOpenIn As String, _
+                                Optional strFileType As String = "All", _
+                                Optional strInitFileName As String, _
+                                Optional blnMultiSelect As Boolean = False)
+
+''On Error GoTo HandleErr
+
+    Set dlg = New clsCommonDlg
+
+    ' Set dialog file filters below; based
+    ' on the strFileType entered by user
+    strDialogFileDisp = ""
+    PutUsrPar "DIALOG_CANCEL", False
+    Select Case strFileType >= ""
+
+        ' Access files
+        Case Mid(strFileType, 1, 6) = "Access"
+
+            strDialogFileDisp = _
+                "Access Files (*.mdb, *.mde*, *.mda, *.mdw)| " & _
+                "*.mdb; *.mde; *.mda; *.mdw| "
+
+        ' dBase files
+        Case Mid(strFileType, 1, 5) = "dBase"
+
+            strDialogFileDisp = _
+                "dBase III Files (*.dbf)|" & _
+                "*.dbf|" & _
+                "dBase IV Files (*.dbf)|" & _
+                "*.dbf|" & _
+                "dBase V Files (*.dbf)|" & _
+                "*.dbf|"
+
+        ' Excel files
+        Case Mid(strFileType, 1, 5) = "Excel"
+
+            strDialogFileDisp = _
+                "Excel 2000 Files [v.9] (*.xls)|" & _
+                "*.xls|" & _
+                "Excel 97 Files [v.8] (*.xls)|" & _
+                "*.xls|" & _
+                "Excel 95 Files [v.5-7] (*.xls)|" & _
+                "*.xls|" & _
+                "Excel Files [v.4] (*.xls)| " & _
+                "*.xls|"
+
+        ' Text files
+        Case strFileType = "Text"
+
+            strDialogFileDisp = _
+                "Comma-Delimited Text Files (*.txt, *.asc, *.csv)|" & _
+                "*.txt; *.asc; *.csv|"
+
+        ' Text files
+        Case strFileType = "Rich Text" Or _
+                strFileType = "RTF" Or _
+                strFileType = "Rich Text Format"
+
+            strDialogFileDisp = _
+                "Rich Text Format Files (*.rtf)|" & _
+                "*.rtf|"
+
+        ' Text files
+        Case strFileType = "Access Snapshot" Or _
+                strFileType = "Snapshot" Or _
+                strFileType = "SNP"
+
+            strDialogFileDisp = _
+                "Access report Snapshop Files (*.snp)|" & _
+                "*.snp|"
+
+        ' Image files
+        Case strFileType = "Image"
+
+            strDialogFileDisp = _
+                "Image Files (*.jpg, *.jpeg, *.bmp, *.wmf)|" & _
+                "*.jpg; *.jpeg; *.bmp; *.wmf|"
+
+        ' Icon files
+        Case strFileType = "Icon"
+
+            strDialogFileDisp = _
+                "Icon Files (*.ico, *.bmp)|" & _
+                "*.ico; *.bmp|"
+        
+        ' Font files
+        Case strFileType = "Font"
+
+            strDialogFileDisp = _
+                "Font Files (*.ttf)|" & _
+                "*.ttf|"
+        
+        ' Help files
+        Case strFileType = "Help"
+
+            strDialogFileDisp = _
+                "Help Files (*.hlp, *.chm)|" & _
+                "*.hlp; *.chm|"
+        
+        ' Executable files
+        Case strFileType = "Executable"
+
+            strDialogFileDisp = _
+                "Executable Files (*.exe, *.com, *.bat)|" & _
+                "*.exe; *.com; *.bat|"
+
+        ' Show All of the above file types
+        Case Else
+
+            strDialogFileDisp = _
+                "Access Files (*.mdb, *.mda)|" & _
+                "*.mdb; *.mda; *.mde|" & _
+                "dBase III Files (*.dbf)|" & _
+                "*.dbf|" & _
+                "dBase IV Files (*.dbf)|" & _
+                "*.dbf|" & _
+                "dBase V Files (*.dbf)|" & _
+                "*.dbf|" & _
+                "Excel 2000 Files [v.9] (*.xls)|" & _
+                "*.xls|" & _
+                "Excel 97 Files [v.8] (*.xls)|" & _
+                "*.xls|" & _
+                "Excel 95 Files [v.5-7] (*.xls)|" & _
+                "*.xls|" & _
+                "Excel Files [v.4] (*.xls)|" & _
+                "*.xls|" & _
+                "Paradox 5 Files (*.db)|" & _
+                "*.db|" & _
+                "Comma-Delimited Text Files (*.txt, *.asc, *.csv)|" & _
+                "*.txt; *.asc; *.csv|" & _
+                "All Files (*.*)| *.*|"
+                
+    End Select
+
+    ' Set parameter so that the caption on the
+    ' resulting dialog reflects the operation
+    ' to be performed
+    Select Case strDlgType >= ""
+
+        Case strDlgType = "Import"
+
+            dlg.DialogTitle = "  Import File"
+
+        Case strDlgType = "Export"
+
+            dlg.DialogTitle = "  Export To File"
+
+        Case strDlgType = "Link"
+
+            dlg.DialogTitle = "  Link to Table"
+
+        Case Else
+
+            dlg.DialogTitle = "  Select"
+
+    End Select
+
+    ' Establish the default file extension for each file type
+    Select Case strFileType
+
+        Case Mid(strFileType, 1, 6) = "Access"
+
+            dlg.DefaultExt = ".mdb"
+
+        Case Mid(strFileType, 1, 5) = "dBase"
+
+            dlg.DefaultExt = ".dbf"
+
+        Case strFileType = "Excel"
+
+            dlg.DefaultExt = ".xls"
+
+        Case strFileType = "Text"
+
+            dlg.DefaultExt = ".txt"
+
+        ' Rich Text Format files
+        Case strFileType = "Rich Text" Or _
+                strFileType = "RTF" Or _
+                strFileType = "Rich Text Format"
+
+            dlg.DefaultExt = ".rtf"
+
+        ' Snapshot files
+        Case strFileType = "Access Snapshot" Or _
+                strFileType = "Snapshot" Or _
+                strFileType = "SNP"
+
+            dlg.DefaultExt = ".snp"
+        
+        Case Else
+
+            dlg.DefaultExt = ".*"
+
+    End Select
+
+    ' Sets the 'Multi [File] Select' switch to On it blnMultiSelect = True
+    If blnMultiSelect = True Then
+    
+        dlg.Flags = &H200
+        
+    End If
+    
+    ' Open the dialog and retrieve the selected Path & File name
+    If strInitFileName > "" Then
+        
+        dlg.FileName = strInitFileName
+    
+    Else
+        
+        dlg.FileName = ""
+    
+    End If
+    
+    If strOpenIn > "" Then
+        
+        If strOpenIn = "My Documents" Then
+
+            dlg.InitDir = SpecFolder(5)
+
+        ElseIf strOpenIn = "Desktop" Then
+
+            dlg.InitDir = SpecFolder(0)
+
+        ElseIf strOpenIn = "Default" Then
+
+            'Don't set dlg.InitDir use users last directory
+
+        Else
+            
+            'Assume an actual path
+            dlg.InitDir = strOpenIn
+        
+        End If
+    
+    End If
+
+    If strOpenIn > "" Then
+    
+        dlg.InitDir = strOpenIn
+        
+    End If
+    
+    dlg.Filter = strDialogFileDisp
+    
+    If strDlgType = "Export" Then
+        
+        dlg.ShowSave
+    
+    Else
+        
+        dlg.ShowOpen
+    
+    End If
+
+    
+    strPathFileName = dlg.FileName
+
+    ' Exit Function if user clicks on Cancel
+    If strDialogFileDisp = "" Then
+
+        PutUsrPar "DIALOG_CANCEL", True
+        GetDlgFileInfo = "Canceled"
+        GoTo ExitHere
+
+    ' Capture the specific file type & version
+    ' from the selected file's filter index
+    Else
+
+        PutUsrPar "DIALOG_CANCEL", False
+        Select Case strFileType > ""
+
+            ' If Access file selected...
+            Case strFileType = "Access"
+
+                strFormat = "Microsoft Access"
+
+            ' If dBase files selected...
+            Case strFileType = "dBase"
+
+                Select Case dlg.FilterIndex > 0
+
+                    Case dlg.FilterIndex = 1
+
+                        strFormat = "dBase III"
+
+                    Case dlg.FilterIndex = 2
+
+                        strFormat = "dBase IV"
+
+                    Case dlg.FilterIndex = 3
+
+                        strFormat = "dBase 5.0"
+
+                End Select
+
+            ' If Excel files selected
+            Case strFileType = "Excel"
+
+                Select Case dlg.FilterIndex > 0
+
+                    Case dlg.FilterIndex = 1
+
+                        strFormat = "Excel 2000"
+
+                    Case dlg.FilterIndex = 2
+
+                        strFormat = "Excel 97"
+
+                    Case dlg.FilterIndex = 3
+
+                        strFormat = "Excel 95"
+
+                    Case dlg.FilterIndex = 4
+
+                        strFormat = "Excel v.4"
+
+                End Select
+
+            ' If Text file selected...
+            Case strFileType = "Text"
+
+                strFormat = "ASCII Comma Delimited"
+
+            ' If All Files selected...
+            Case strFileType = "All"
+
+                Select Case dlg.FilterIndex > 0
+
+                    Case dlg.FilterIndex = 1
+
+                        strFormat = "Microsoft Access"
+
+                    Case dlg.FilterIndex = 2
+
+                        strFormat = "dBase III"
+
+                    Case dlg.FilterIndex = 3
+
+                        strFormat = "dBase IV"
+
+                    Case dlg.FilterIndex = 4
+
+                        strFormat = "dBase 5.0"
+
+                    Case dlg.FilterIndex = 5
+
+                        strFormat = "Excel 2000"
+
+                    Case dlg.FilterIndex = 6
+
+                        strFormat = "Excel 97"
+
+                    Case dlg.FilterIndex = 7
+
+                        strFormat = "Excel 95"
+
+                    Case dlg.FilterIndex = 8
+
+                        strFormat = "Excel v.4"
+
+                    Case dlg.FilterIndex = 9
+
+                        strFormat = "Paradox 5"
+
+                    Case dlg.FilterIndex = 10
+
+                        strFormat = "ASCII Comma Delimited"
+
+                End Select
+
+        End Select
+
+        ' Create variables for Path & File Name,
+        ' Path and File Name respectively
+        intDPos = InStrRev(strPathFileName, "\")
+        strPath = Left(strPathFileName, intDPos)
+        strFileName = Right(strPathFileName, Len(strPathFileName) - intDPos)
+        intFiltIndx = dlg.FilterIndex
+
+    End If
+
+    ' Return Path & File Name
+''    If strPathFileName > "" And strPathFileName <> strFileName Then
+''
+''        PutUsrPar "DIALOG_CANCEL", False
+''        PutUsrPar "LINK-TO_ACCESS_DB", strPathFileName
+        
+        GetDlgFileInfo = Trim(strPathFileName)
+        PutUsrPar "DIALOG_RESULT", GetDlgFileInfo
+        GoTo ExitHere
+        
+''    ' If user canceled and strPathFileName
+''    ' is an empty string, return: 'Canceled'
+''    Else
+''
+''        PutUsrPar "DIALOG_CANCEL", True
+''        GetDlgFileInfo = "Canceled"
+''        GoTo ExitHere
+''
+''    End If
+''
+''    GoTo ExitHere
+
+ExitHere:
+
+    Set dlg = Nothing
+    Exit Function
+
+HandleErr:
+
+''    GoTo ExitHere
+
+End Function
+
+
+    '|==========================================================================
+    '| PROCEDURE  : ImportExport
+    '| DATE/TIME  : 2/18/2005 06:15
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : General purpose funtion for Importing, Exporting and Linking
+    '|              to tables and outside files.
+    '|--------------------------------------------------------------------------
+    '| PARAMETERS : strDialogType: "Import", "Export", "Link" & "TextOut"
+    '|              strTblQryName: Name of Table or Query used
+    '|                             in Export Operations
+    '|              strFileType: "Access", "dBase", "Excel", "Text" or "All"
+    '|--------------------------------------------------------------------------
+    '| NOTES      : Supports Import, Export & Linking operations for the
+    '|              following File Formats: Access (tables), dBase III, IV & 5.0,
+    '|             Excel 2000,  97, 95 & v.4 and ASCII Comma Delimited Text.
+    '|==========================================================================
+
+Public Function ImportExport(strDlgType As String, _
+                                Optional strTblQryName As String, _
+                                Optional strFileType As String = "All", _
+                                Optional blnUseDialog As Boolean = True)
+
+''     Dim objWarnState   As New clsTempWarningsState
+
+On Error GoTo HandleErr
+
+    'Turn warnings off only for duration of procedure
+''    objWarnState.RestoreStateTo = False
+''    objWarnState.SetCurrentState False
+    
+        ' Select target File (and Table - if
+        ' Access) for coming operation
+        GetDlgFileInfo strDlgType, , strFileType
+''        PutUsrPar "DIALOG_RESULT", strPathFileName
+        
+    ' Exit Function if user cancels
+    If strPathFileName = "" Then
+
+        MsgBox "No file was selected. You will have to      " & vbCrLf & _
+                "select a file to continue this Export operation.      ", _
+                vbInformation, "  Oops"
+
+        Exit Function
+
+    End If
+
+    ' If this run is going to be an Export operation, run some
+    ' checks to verify that a source table or query has been
+    ' selected, and that it contains records to export
+    If strDlgType = "Export" Then
+
+        ' Check to see whether or not a source table has been
+        ' specified; if not ask for the user to enter one
+        If strTblQryName > "" Then
+
+            If strFileType <> "Access" Then
+            
+                strSource = strTblQryName
+            
+            End If
+        
+        ElseIf strTblQryName = "" Then
+
+           strTblQryName = InputBox("Please select a table to Export:", "  Export Table")
+
+        Else
+
+            GoTo ExitHere
+
+        End If
+
+        ' Check to see if Export source Table or Query has any records
+        If DCount("*", strTblQryName) = 0 Then
+
+            MsgBox "There are no records available in the      " & vbCrLf & _
+                    "currently selected Table or Query...      ", _
+                    vbInformation, "Note"
+
+            GoTo ExitHere
+
+        End If
+
+    End If
+
+    ' Select the Table Name & File Transfer Type
+    Select Case strDlgType > ""
+
+        ' Map Memory variables for Import operations
+        Case strDlgType = "Import" Or strDlgType = "Link"
+
+            '  Set transfer type vaiable to user-selected
+            ' Import or Link operation type
+            Select Case strDlgType > ""
+
+                Case strDlgType = "Import"
+
+                    varTransferType = acImport
+
+                    If strFileType = "Text" Then
+
+                        varTransferType = acImportDelim
+
+                    End If
+
+                Case strDlgType = "Link"
+
+                    varTransferType = acLink
+
+                    If strFileType = "Text" Then
+
+                        varTransferType = acLinkDelim
+
+                    End If
+
+            End Select
+
+            ' Map memory variables for specific File Types
+            Select Case strFileType > ""
+
+                ' dBase files
+                Case strFileType = "dBase"
+
+                    strPath = Mid(strPath, 1, (Len(strPath) - 1))
+                    strSource = strFileName
+                    strFileName = Mid(strFileName, 1, (Len(strFileName) - 4))
+''                    strFileName = "tbl" & Mid(strFileName, 1, (Len(strFileName) - 4))
+
+                ' Excel files
+                Case strFileType = "Excel"
+
+                    strSource = Mid(strFileName, 1, (Len(strFileName) - 4))
+''                    strSource = "tbl" & Mid(strFileName, 1, (Len(strFileName) - 4))
+
+                ' Text files
+                Case strFileType = "Text"
+
+                    strTblQryName = Mid(strFileName, 1, (Len(strFileName) - 4))
+''                    strTblQryName = "tbl" & Mid(strFileName, 1, (Len(strFileName) - 4))
+
+            End Select
+
+        ' Map Memory variables for Export operations
+        Case strDlgType = "Export"
+
+            Select Case strFileType > ""
+
+                ' Excel files
+                Case strFileType = "Excel"
+
+                    strSource = strTblQryName
+                    varTransferType = acExport
+
+                ' dBase files or Access files
+                Case strFileType = "dBase" Or strFileType = "Access"
+                
+                    varTransferType = acExport
+                
+                ' Text files
+                Case strFileType = "Text"
+
+                    varTransferType = acExportDelim
+        
+            End Select
+    
+    End Select
+
+    ' Select the file Format Type
+    Select Case Len(strFormat) >= 1
+
+        '**** Access Format: **************************************************
+        Case strFormat = "Microsoft Access"
+
+''            ' Check to see if a database with the selected
+''            ' name already exists; if not, create it
+''            If Dir(strPathFileName) = "" Then
+''
+''                Set db = DBEngine.Workspaces(0).CreateDatabase _
+''                                (CurrentDb.name, dbLangGeneral)
+''
+''            ' If database exists, create a list of
+''            ' its Tables to display in an input box
+''            Else
+''
+''                Set db = DBEngine.Workspaces(0).OpenDatabase(CurrentDb.name)
+''
+''                strTableList = ""
+''                For Each tblDef In db.TableDefs
+''
+''                    If tblDef.Attributes = 0 And Left(tblDef.name, 4) <> "MSys" Then
+''
+''                        strTableList = strTableList & vbCrLf & RTrim(tblDef.name)
+''
+''                    End If
+''
+''                Next tblDef
+''
+''            End If
+
+            ' Display this Input Box for Exporting
+            If strDlgType = "Export" Then
+                
+                PutUsrPar "IMP_OR_LINK", acExport
+
+                strSource = InputBox("Please enter a table name (not already listed below):      " _
+                                & vbCrLf & strTableList & vbCrLf, "  " & strDlgType, GetUsrPar("LAST_TBL_EXPOUT") & "")
+
+                If strSource = "" Then
+
+                    GoTo ExitHere
+
+                Else
+
+''                    If strFileType <> "Access" Then
+''
+''                        strTblQryName = strSource
+''
+''                    End If
+                    PutUsrPar "LAST_TBL_EXPOUT", strSource
+
+                End If
+
+            ' Display this Input Box for Importing & Linking
+            ElseIf strDlgType = "Import" Then
+
+                PutUsrPar "IMP_OR_LINK", acImport
+                
+            ElseIf strDlgType = "Link" Then
+            
+                PutUsrPar "IMP_OR_LINK", acLink
+            
+''                strSource = InputBox("Please enter a table name. Table Names from " & _
+''                                    "your selected source database are listed below:      " _
+''                                    & vbCrLf & strTableList & vbCrLf, "  " & strDlgType, GetUsrPar("LAST_TABLE_IMPLINK") & "")
+''
+''                If strSource = "" Then
+''
+''                    GoTo ExitHere
+''
+''                Else
+''
+''                    strTblQryName = strSource
+''                    PutUsrPar "LAST_TABLE_IMPLINK", strSource
+''
+''                End If
+                PutUsrPar "LINK-TO_ACCESS_DB", strPathFileName
+
+''                DoCmd.OpenForm "frmTables" ', acNormal, , , , acDialog
+                
+            End If
+
+''            ' Run data exchange operation
+''            Application.DoCmd.TransferDatabase _
+''                    transfertype:=varTransferType, _
+''                    databasetype:=strFormat, _
+''                    DatabaseName:=strPathFileName, _
+''                    objecttype:=acTable, _
+''                    Source:=strTblQryName, _
+''                    Destination:=strSource, _
+''                    structureonly:=False
+
+            GoTo ExitHere
+
+        ' **** dBase & Paradox Formats: ***************************************
+        Case strFormat = "dBase III" Or strFormat = "dBase IV" Or _
+                strFormat = "dBase 5.0" Or strFormat = "Paradox 5.x"
+
+            ' Run data exchange operation
+            DoCmd.TransferDatabase _
+                    transfertype:=varTransferType, _
+                    databasetype:=strFormat, _
+                    DatabaseName:=strPath, _
+                    objecttype:=acTable, _
+                    Source:=strSource, _
+                    Destination:=strFileName, _
+                    structureonly:=False
+
+            ' Delete extraneous files generated
+            ' by Access during a dBase Export
+            If strDlgType = "Export" Then
+
+                If Dir(strPath & "*.MDX") > "" Then Kill strPath & "*.MDX"
+                If Dir(strPath & "*.NDX") > "" Then Kill strPath & "*.NDX"
+                If Dir(strPath & "*.INF") > "" Then Kill strPath & "*.INF"
+
+            End If
+
+            GoTo ExitHere
+
+        ' **** Excel Formats: *************************************************
+        Case strFormat = "Excel 2000" Or strFormat = "Excel 97" Or _
+                strFormat = "Excel 95" Or strFormat = "Excel v.4"
+
+            ' Different versions of Excel use different SpreadSheetType
+            ' constants; this selects the one that matches the selected
+            ' file format
+            Select Case strFormat > ""
+
+                Case strFormat = "Excel 2000"
+
+                    varExcelType = acSpreadsheetTypeExcel9
+
+                Case strFormat = "Excel 97"
+
+                    varExcelType = acSpreadsheetTypeExcel8
+
+                Case strFormat = "Excel 95"
+
+                    varExcelType = acSpreadsheetTypeExcel7
+
+                Case strFormat = "Excel v.4"
+
+                     varExcelType = acSpreadsheetTypeExcel4
+
+            End Select
+
+            ' If running Import or Export operations, ask
+            ' whether or not to use Field Names
+''            If strDlgType = "Import" Or strDlgType = "Export" Then
+
+                TF = False
+                TF = ImpExpFldNamesTF()
+
+''            End If
+
+            ' Run data exchange operation
+            DoCmd.TransferSpreadsheet _
+                    transfertype:=varTransferType, _
+                    spreadsheettype:=varExcelType, _
+                    TableName:=strSource, _
+                    FileName:=strPathFileName, _
+                    hasfieldnames:=True
+
+            GoTo ExitHere
+
+        ' **** ASCII Comma Delimited Format: **********************************
+        Case strFormat = "ASCII Comma Delimited"
+
+            ' If running Import or Export operations, ask
+            ' whether or not to use Field Names
+''            If MID(Len(strPathFileName) - 4, 1) <> "." Then
+''
+''                strPathFileName = strPathFileName & ".txt"
+''
+''            End If
+
+            If strDlgType = "Import" Or strDlgType = "Export" Then
+
+                TF = False
+                TF = ImpExpFldNamesTF()
+
+            End If
+
+            ' Run data exchange operation
+            DoCmd.TransferText _
+                  transfertype:=varTransferType, _
+                  TableName:=strTblQryName, _
+                  FileName:=strPathFileName, _
+                  hasfieldnames:=TF
+
+            GoTo ExitHere
+
+        End Select
+
+ExitHere:
+
+    If Not db Is Nothing Then
+
+        db.Close
+        Set db = Nothing
+
+    End If
+
+    DoCmd.Hourglass False
+    Exit Function
+
+HandleErr:
+
+        Select Case Err.Number > 0
+        
+            Case Err.Number = 2001
+    
+                Resume ExitHere
+                Resume
+                
+            Case Err.Number = 3274
+    
+                Call MsgBox("This table or file is not in the specified format.      ", _
+                            vbCritical, "  Bad, Bad Dog! No biscuit!")
+    
+            Case Err.Number = 3011
+    
+                Call MsgBox("dBase tables cannot have a name longer than 8 characters due to ODBC constraints.      " & vbCrLf & _
+                            "Please rename the file using the 8/3 convention (AAAAAAAA.AAA), and try again.      " & vbCrLf & _
+                            Err.Description, _
+                            vbCritical, "  How would you know when MS doesn't tell?")
+                            
+            Case Err.Number = 3024
+    
+                MsgBox "Yipes!      "
+    
+            Case Else
+    
+                ' Change operation status message.
+''                Call MsgBox("File Export to: " & strPathFileName & vbCrLf & _
+                            "was unsuccessful... Please try again     " & vbCrLf & _
+                            "using different import parameters.      ", _
+                            vbCritical, "Error!")
+    
+                MsgBox Err.Number & ": " & Err.Description
+                Resume ExitHere
+                Resume
+    
+        End Select
+
+End Function
+
+
+    '|==========================================================================
+    '| PROCEDURE  : SaveTxtRptFileName
+    '| DATE/TIME  : 11/3/2002 10:11
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Displays a Save File dialog that lets user name or select
+    '|              an output file name for reports written to a text files.
+    '|==========================================================================
+
+Function SaveTxtRptFileName()
+
+    Dim strPathFileName     As String
+
+On Error GoTo HandleErr
+
+    PutUsrPar "DIALOG_CANCEL", False
+
+    strPathFileName = GetDlgFileInfo("Export", "Text")
+
+    If strPathFileName = "" Then
+
+        PutUsrPar "DIALOG_CANCEL", True
+        Exit Function
+
+    Else
+
+        If Left(Right(strPathFileName, 4), 1) = "." Then
+
+            PutUsrPar "EXP_RPT_TO_TXT", strPathFileName
+
+        Else
+
+            PutUsrPar "EXP_RPT_TO_TXT", strPathFileName & ".txt"
+
+        End If
+
+    End If
+
+    GoTo ExitHere
+
+ExitHere:
+
+    Exit Function
+
+HandleErr:
+
+    If Err.Number = 2501 Then
+
+        GoTo ExitHere
+
+    End If
+
+    GoTo ExitHere
+
+End Function
+
+
+    '|==========================================================================
+    '| PROCEDURE  : ImpFldNamesTF
+    '| DATE/TIME  : 11/3/2002 10:21
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Sets the flag in the ztbParams table for including or
+    '|              excluding field names in Excel and Text file imports.
+    '|==========================================================================
+
+Function ImpExpFldNamesTF() As Boolean
+
+    Dim Response    As VbMsgBoxResult
+    Dim TF          As Boolean
+
+On Error GoTo HandleErr
+
+    Response = MsgBox("Do you wish to Include field names?      ", _
+            vbYesNo + vbQuestion, "Field Names:")
+
+    If Response = vbYes Then
+
+        ImpExpFldNamesTF = True
+
+    ElseIf Response = vbNo Then
+
+        ImpExpFldNamesTF = False
+
+    End If
+
+    GoTo ExitHere
+
+ExitHere:
+
+    Exit Function
+
+HandleErr:
+
+    GoTo ExitHere
+
+End Function
+
+
+'*******************************************************************************
+' Get/Put Parameter functions for processing User Parameters
+'*******************************************************************************
+
+
+    '|==========================================================================
+    '| PROCEDURE  : GetUsrPar
+    '| DATE/TIME  : 1/27/2006 09:33
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Retrieves a parameter value [VAL] from the ztblParameterUser
+    '|              user parameters table using the input [KEY] value.
+    '|==========================================================================
+
+Public Function GetUsrPar(Key)
+    
+    Dim rst         As DAO.Recordset
+    Dim strSQLTxt   As String
+
+On Error GoTo HandleErr
+  
+    strSQLTxt = "SELECT " & _
+                "[VAL] " & _
+                "FROM " & _
+                "ztblParameterUser " & _
+                "WHERE " & _
+                "ztblParameterUser.[KEY] = '" & Key & "';"
+        
+    Set rst = CurrentDb.OpenRecordset(strSQLTxt)
+
+    ' Use for Code databses
+''    strSQLTxt = "SELECT " & _
+''                "[VAL] " & _
+''                "FROM " & _
+''                "ztblParameterUser " & _
+''                "IN '" & _
+''                CodeDb.Name & "' " & _
+''                "WHERE " & _
+''                "ztblParameterUser.[KEY] = '" & Key & "';"
+''
+''    Set rst = CodeDb.OpenRecordset(strSQLTxt)
+
+    GetUsrPar = rst.Fields("VAL")
+    GoTo ExitHere
+    
+ExitHere:
+
+    If Not rst Is Nothing Then
+        
+        rst.Close
+        Set rst = Nothing
+        
+    End If
+    
+    Exit Function
+
+HandleErr:
+
+    GoTo ExitHere
+
+End Function
+
+    
+    '|==========================================================================
+    '| PROCEDURE  : PutUsrPar
+    '| DATE/TIME  : 1/27/2006 09:35
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : To write a parameter value [VAL] to the ztblParameterUser
+    '|              parameters table using the input [KEY] value.
+    '|==========================================================================
+
+Public Sub PutUsrPar(Key, Val)
+    
+    Dim strSQLTxt       As String
+''    Dim objWarnState    As New clsTempWarningsState
+   
+On Error GoTo HandleErr
+    
+''    'Turn warnings off only for duration of procedure
+''    objWarnState.RestoreStateTo = False
+''    objWarnState.SetCurrentState False
+
+    strSQLTxt = "UPDATE " & _
+                "ztblParameterUser " & _
+                "SET " & _
+                "[VAL] = '" & Val & "' " & _
+                "WHERE " & _
+                "ztblParameterUser.[KEY] = '" & Key & "';"
+        
+    CurrentDb.Execute strSQLTxt, dbFailOnError
+    
+    ' Use for Code databses
+''    strSQLTxt = "UPDATE " & _
+''                "ztblParameterUser " & _
+''                "IN '" & _
+''                CodeDb.Name & "' " & _
+''                "SET " & _
+''                "[VAL] = '" & Val & "' " & _
+''                "WHERE " & _
+''                "ztblParameterUser.[KEY] = '" & Key & "';"
+''
+''    CodeDb.Execute strSQLTxt, dbFailOnError
+    
+    GoTo ExitHere
+    
+ExitHere:
+
+    Exit Sub
+    
+HandleErr:
+
+    GoTo ExitHere
+
+End Sub
+
+
+
+
+    '|==========================================================================
+    '| PROCEDURE  : TblExists
+    '| DATE/TIME  : 11/12/2002 14:15
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : To verify that a table exists with the same name as input
+    '|              by the user.
+    '|--------------------------------------------------------------------------
+    '| PARAMETERS :
+    '|--------------------------------------------------------------------------
+    '| NOTES      : Boolean. Returns 0 for False and -1 for True.
+    '|==========================================================================
+    
+Function TblExists(TableName As Variant) As Integer
+
+    Dim db      As Database
+    Dim intI    As Integer
+
+On Error GoTo HandleErr
+    
+    Set db = CurrentDb
+   
+    TblExists = False
+
+    For intI = 0 To db.TableDefs.Count - 1
+          
+    If db.TableDefs(intI).Name = TableName Then
+       
+        TblExists = True
+        GoTo ExitHere
+       
+    End If
+       
+    Next intI
+    
+    GoTo ExitHere
+
+ExitHere:
+
+    Set db = Nothing
+    
+    Exit Function
+
+HandleErr:
+
+    GoTo ExitHere
+
+End Function
+
+
+Function GetWord(strStringIn As String, intPosition As Integer, Optional strDelim As String = " ")
+
+    Dim aryWords()  As String
+    Dim intU        As Integer
+    
+    aryWords() = Split(strStringIn, strDelim)
+    intU = UBound(aryWords())
+    
+    Select Case intPosition
+    
+        Case 1 To (intU + 1)
+    
+            GetWord = aryWords(intPosition - 1)
+    
+        Case -(intU + 1) To -1
+        
+            GetWord = aryWords((intU + 1) + intPosition)
+        
+        Case Else
+        
+            GetWord = ""
+            
+    End Select
+
+End Function
+
+        
+    '|==========================================================================
+    '| PROCEDURE  : Words
+    '| DATE/TIME  : 4/26/2003 13:20
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Returns a string of "intNth" number of "Words" from
+    '|              "strStringIn" variable where "Words" are strings that are
+    '|              delimited by the strDelimiter(default character is a space).
+    '|--------------------------------------------------------------------------
+    '| PARAMETERS : Optional strDelimiter enables you to change word-delimiting
+    '|              spaces to alternate characters.
+    '|--------------------------------------------------------------------------
+    '| NOTES      : You can use minus numbers to specify the number of words to
+    '|              pull from the right side of the entered string. For example,
+    '|              Words("Hello George, how are you?", -2) would return:
+    '|              "are you?".
+    '|==========================================================================
+
+Public Function Words(strStringIn As String, _
+                    intNth As Integer, _
+                    Optional strDelimiter As String) As String
+
+    Dim intWordCount    As Integer
+    Dim intI            As Integer
+    Dim intSubStrCount  As Integer
+    Dim intPos          As Integer
+    Dim strTemp         As String
+    Dim intQuit         As Integer
+    
+    intWordCount = 0
+    intSubStrCount = 0
+    intI = 1
+    intPos = 0
+    strTemp = ""
+    intQuit = 0
+    intWordCount = WCount(strStringIn, strDelimiter)
+
+    If intNth > intWordCount Then
+    
+        intNth = intWordCount
+        
+    End If
+    
+    intQuit = Val(Right(Str(intNth), Len(Trim(Str(intNth)))))
+    
+    If intQuit = 0 Then
+
+        Words = ""
+        GoTo ExitHere
+
+    ElseIf intQuit < 0 Then
+    
+        
+        intQuit = 2 * (Val(Right(Str(intNth), Len(Trim(Str(intNth))) - 1)))
+        For intI = 1 To intQuit
+        
+            If strTemp = "" Then
+            
+                strTemp = GetWord(strStringIn, intNth, strDelimiter)
+    
+            Else
+            
+                strTemp = strTemp & strDelimiter & _
+                GetWord(strStringIn, intNth, strDelimiter)
+    
+            End If
+            
+            intI = intI + 1
+            intNth = intNth + 1
+            
+        Next
+        
+    ElseIf intQuit > 0 Then
+
+        intQuit = (2 * intNth)
+
+        For intI = 1 To (intQuit)
+
+            If strTemp = "" Then
+
+                strTemp = GetWord(strStringIn, intNth, strDelimiter)
+
+            Else
+
+                strTemp = GetWord(strStringIn, intNth, strDelimiter) & _
+                strDelimiter & strTemp
+
+            End If
+            
+            intI = intI + 1
+            intNth = intNth - 1
+
+        Next
+        
+    End If
+
+    Words = strTemp
+    
+    GoTo ExitHere
+
+ExitHere:
+
+     Exit Function
+
+End Function
+
+
+
+Public Function SpecFolder(ByVal lngFolder As Long) As String
+    
+    Dim lngPidlFound As Long
+    Dim lngFolderFound As Long
+    Dim lngPidl As Long
+    Dim strPath As String
+     
+    'Defined folders
+    '    0   Desktop
+    '    2   Programs
+    '    5   Personal (My Documents)
+    '    6   Favorites
+    '    8   Recent
+    '    9   SendTo
+    '    11  StartMenu
+    '    13  MyMusic
+    '    16  DesktopDirectory
+    '    26  ApplicationData
+    '    28  LocalApplicationData
+    '    32  InternetCache
+    '    33  Cookies
+    '    34  History
+    '    35  CommonApplicationData
+    '    37  System
+    '    38  ProgramFiles
+    '    39  MyPictures
+    '    43  CommonProgramFiles
+     
+    strPath = Space(260)
+    lngPidlFound = SHGetSpecialFolderLocation(0, lngFolder, lngPidl)
+    
+    If lngPidlFound = 0 Then
+        
+        lngFolderFound = SHGetPathFromIDList(lngPidl, strPath)
+        
+        If lngFolderFound Then
+            
+            SpecFolder = Left$(strPath, _
+                InStr(1, strPath, vbNullChar) - 1)
+        
+        End If
+    End If
+    
+    CoTaskMemFree lngPidl
+    
+End Function
+   
+    
+    '|==========================================================================
+    '| PROCEDURE  : WCount
+    '| DATE/TIME  : 4/26/2003 13:29
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Counts the "Words" in a field or text string.
+    '|--------------------------------------------------------------------------
+    '| NOTES      : A "Word" is defined as a string sparated from another
+    '|              string by a space (i.e. "The swift brown fox jumped
+    '|              over the lazy dog" would return a WCount of: 9).
+    '|==========================================================================
+
+Public Function WCount(StringIn As String, _
+                Optional strDelim As String) As Integer
+
+    Dim strTest         As String
+    Dim intStrInLen     As Integer
+    Dim Counter         As Integer
+    Dim i               As Integer
+    
+    strTest = ClrWhiteSpc(Trim(StringIn))
+    intStrInLen = Len(strTest)
+    
+    If strDelim = "" Then
+    
+        strDelim = " "
+    
+    End If
+    
+    If intStrInLen = 0 Then
+    
+        Counter = 0
+    
+    Else
+    
+        Counter = 1
+        
+    End If
+    
+    For i = 1 To intStrInLen
+    
+        If Mid(strTest, i, 1) = strDelim Then
+            
+            Counter = Counter + 1
+      
+        End If
+
+    Next i
+    
+Finish:
+
+    WCount = Counter
+    
+ExitHere:
+
+     Exit Function
+
+End Function
+
+
+    '|==========================================================================
+    '| PROCEDURE  : ClrWhiteSpc
+    '| DATE/TIME  : 12/7/2002 07:46
+    '|--------------------------------------------------------------------------
+    '| PURPOSE    : Removes leading, trailing and multiple spaces from the
+    '|              specified field or string (strStringIn).
+    '|==========================================================================
+    
+Public Function ClrWhiteSpc(strStringIn As String)
+
+    Dim strNewString  As String
+    
+    strNewString = Trim(strStringIn)
+    
+    Do Until InStr(strNewString, "  ") = 0
+    
+        strNewString = Replace(strNewString, "  ", " ")
+
+    Loop
+
+    ClrWhiteSpc = strNewString
+    
+    GoTo ExitHere
+
+ExitHere:
+
+    Exit Function
+
+End Function
+

@@ -1,0 +1,40 @@
+Option Compare Database
+Option Explicit
+
+Private Sub cmdClear_Click()
+
+Me!Fname = ""
+Me!Lname = ""
+Me!EmpNumber = ""
+Me!Fname.SetFocus
+
+End Sub
+
+Private Sub Form_Close()
+  DoCmd.OpenForm "frmMain"
+End Sub
+
+Private Sub Form_Current()
+  DoCmd.Maximize
+End Sub
+
+Private Sub Form_GotFocus()
+  DoCmd.Maximize
+End Sub
+
+Private Sub Form_Open(Cancel As Integer)
+Dim strSQL As String
+
+DoCmd.SetWarnings False
+
+'delete the existing data
+DeleteAllRecords "Pool_tblResearch"
+
+Forms!Pool_frmResearch!frmResearchSub.Requery
+Forms!Pool_frmResearch!frmResearchSub2.Form.RecordSource = "Pool_qryMSP_Pool_Empty"
+Forms!Pool_frmResearch!lblStatus = ""
+DoCmd.Maximize
+
+End Sub
+
+

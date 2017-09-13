@@ -1,0 +1,18 @@
+Option Compare Database
+Option Explicit
+
+Public ErrState As String
+'
+
+Function fctErrMsg(ErrStr As String)
+Dim strMsg As String
+Dim strTitle As String
+Dim strStyle As String
+
+strMsg = "An ERROR occurred in the function " & ErrStr & "." & vbCr & "The error text was:  '" & Error & "'" & "The Error Number was " & Err
+strTitle = "FATAL ERROR"
+strStyle = vbOKOnly + vbCritical
+ErrState = MsgBox(strMsg, strStyle, strTitle)
+    
+End Function
+

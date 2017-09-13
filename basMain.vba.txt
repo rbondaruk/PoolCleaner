@@ -1,0 +1,65 @@
+Option Compare Database
+Option Explicit
+
+    Dim dlg                 As clsCommonDlg
+    Dim db                  As DAO.Database
+    Dim tblDef              As DAO.TableDef, strTableList
+
+    Dim strDialogFileDisp   As String   ' Files displayed in dialog drop-down
+    Dim strFormat           As String   ' Specific file format name (e.g. dBase 5.0)
+    Dim strPathFileName     As String   ' Path & file name returned from dialog
+    Dim strPath             As String   ' Path returned from dialog
+    Dim strFileName         As String   ' File name returned from dialog
+    Dim strSource           As String   ' Source of Import,Export & Link operations
+
+    Dim intDPos             As Integer
+    Dim intFiltIndx         As Integer  ' Dialog index number
+
+    Dim TF                  As Boolean  ' Include field names True/False
+
+    Dim varExcelType        As Variant  ' Version of Excel being processed
+    Dim varTransferType     As Variant  ' Transfer type (e.g. acImport, acExportDelim)
+
+Public Declare Function SHGetSpecialFolderLocation Lib "shell32" _
+                            (ByVal hwnd As Long, ByVal nFolder As Long, ppidl As Long) As Long
+            
+Public Declare Function SHGetPathFromIDList Lib "shell32" _
+                            Alias "SHGetPathFromIDListA" _
+                            (ByVal pidl As Long, ByVal pszPath As String) As Long
+                            
+Public Declare Sub CoTaskMemFree Lib "ole32" (ByVal pvoid As Long)
+
+Public Function DeleteAllRecords(sTableName As String)
+
+Dim dbs As Database, rst As Recordset
+
+Set dbs = CurrentDb()
+dbs.Execute "DELETE * FROM " & sTableName & ";"
+dbs.Close
+
+End Function
+
+Function fctGetPath(sFileName As String) As String
+'***************
+'Uses FileDialog to allow the user to set the directory to save reports to
+'Called from fctAutoBuildReports
+'***************
+
+Dim dlgSaveAs As FileDialog
+Dim strPath As String
+
+Set dlgSaveAs = Application.FileDialog(msoFileDialogSaveAs)
+dlgSaveAs.InitialFileName = sFileName
+
+If dlgSaveAs.Show = -1 Then
+    strPath = dlgSaveAs.SelectedItems(1)
+    strPath = Left(strPath, InStrRev(strPath, "\"))
+    fctGetPath = strPath
+End If
+
+'Cleanup
+Set dlgSaveAs = Nothing
+
+End Function
+
+

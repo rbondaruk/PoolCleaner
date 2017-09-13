@@ -1,0 +1,272 @@
+Option Compare Database
+Option Explicit
+
+Private Sub cmdClearTables_Click()
+On Error GoTo Err_cmdClearTables_Click
+
+If MsgBox("Ready to Clear New MSP Table prior to Refresh", vbQuestion + _
+  vbYesNo + vbDefaultButton2, "") = vbNo Then
+  Exit Sub
+End If
+
+DeleteAllRecords ("New_MSP_Pool")
+Me.Refresh
+
+If MsgBox("Clear Clarity Pool and MSP Pool Tables", vbQuestion + vbYesNo + vbDefaultButton2, "") = vbYes Then
+    DeleteAllRecords ("Clarity_Pool")
+    DeleteAllRecords ("Current_MSP_Pool")
+End If
+
+MsgBox "Import Source Tables before continuing", vbInformation, ""
+
+Exit_cmdClearTables_Click:
+    Exit Sub
+
+Err_cmdClearTables_Click:
+    MsgBox Err.Description
+    Resume Exit_cmdClearTables_Click
+End Sub
+
+Function fctRunImport()
+
+DoEvents
+If fctImportPoolData = False Then Exit Function
+
+If fctImportClarityData = False Then Exit Function
+
+If Pool_fctGetREIData = False Then Exit Function
+
+If fctImportClarityResData = False Then Exit Function
+DoCmd.Close acForm, "frmMeter"
+
+End Function
+
+Private Sub cmdMSP_Click()
+On Error GoTo Err_cmdMSP_Click
+
+'Add Check for Records prior to running
+  Call ExecuteSQL(1)
+  Me.Refresh
+
+Exit_cmdMSP_Click:
+    Exit Sub
+
+Err_cmdMSP_Click:
+    MsgBox Err.Description
+    Resume Exit_cmdMSP_Click
+
+End Sub
+
+Private Sub ExecuteSQL(cmdStep As Integer)
+
+Dim strSQL As String
+
+On Error GoTo Err_ExecuteSQL
+Select Case cmdStep
+  Case 1
+  'Copy Current Pool Values into New Pool
+    strSQL = "INSERT INTO New_MSP_Pool ( MSPID, Initials, EmpNum, Name, Obsolete, Vendor ) "
+    strSQL = strSQL & "SELECT Current_MSP_Pool.ID, Current_MSP_Pool.Initials, Current_MSP_Pool.EmpNum, Current_MSP_Pool.Name, Current_MSP_Pool.Obsolete, Current_MSP_Pool.Vendor "
+    strSQL = strSQL & "FROM Current_MSP_Pool;"
+
+  Case 2
+  'Set Obsolete Flag as 'Y' where Clarity and REI are listed as valid resources
+  'Problem with this as values are not necessarily both in Clarity and MSP
+  'Need to join REI with Clarity
+
+    strSQL = "UPDATE New_MSP_Pool LEFT JOIN Clarity_REI_ValidResource ON New_MSP_Pool.Initials = Clarity_REI_ValidResource.INITIALS "
+    strSQL = strSQL & "SET New_MSP_Pool.Obsolete = 'Y' WHERE (((Clarity_REI_ValidResource.INITIALS) Is Null)  AND ((New_MSP_Pool.Initials) Not Like '_*')); "
+
+'Old query only joining MSP to Clarity
+'    strSQL = "UPDATE New_MSP_Pool LEFT JOIN Clarity_Pool ON New_MSP_Pool.Initials = Clarity_Pool.INITIALS "
+'    strSQL = strSQL & "SET New_MSP_Pool.Obsolete = 'Y'"
+'    strSQL = strSQL & "WHERE (((Clarity_Pool.INITIALS) Is Null));"
+
+  Case 3
+  'Update Clarity Vendor from Niku.TRG_MV_Resource table
+  'Vendor information not available in Niku.NBI_Resource_Facts table
+    strSQL = "UPDATE Clarity_Pool INNER JOIN Clarity_Res_View ON Clarity_Pool.Initials = Clarity_Res_View.Resource_ID "
+    strSQL = strSQL & "SET Clarity_Pool.Vendor = Clarity_Res_View.Vendor "
+
+  Case 4
+  'Append Resource Information not found in current pool from Clarity
+    strSQL = "INSERT INTO New_MSP_Pool ( Initials, EmpNum, Name, Vendor, MSPID ) "
+    strSQL = strSQL & "SELECT Clarity_Pool.INITIALS, Clarity_Pool.EmpNum, Clarity_Pool.NAME, Clarity_Pool.Vendor, DMax('[Current_MSP_Pool]![ID]','Current_MSP_Pool')+100 "
+    strSQL = strSQL & "FROM Clarity_Pool LEFT JOIN Current_MSP_Pool ON Clarity_Pool.EmpNum = Current_MSP_Pool.EmpNum "
+    strSQL = strSQL & "WHERE (((Clarity_Pool.INITIALS) Like 'r[0-9]*' Or (Clarity_Pool.INITIALS) Like 'c[0-9]*') AND ((Current_MSP_Pool.Initials) Is Null) AND ((Clarity_Pool.OBSOLETE) Is Null));"
+
+  Case 5
+  'Append Role Information not found in current pool from Clarity
+    strSQL = "INSERT INTO New_MSP_Pool ( Initials, EmpNum, Name, Vendor, MSPID ) "
+    strSQL = strSQL & "SELECT Clarity_Pool.INITIALS, Clarity_Pool.EmpNum , Clarity_Pool.NAME, Clarity_Pool.Vendor, DMax('[Current_MSP_Pool]![ID]','Current_MSP_Pool')+200 "
+    strSQL = strSQL & "FROM Clarity_Pool LEFT JOIN Current_MSP_Pool ON Clarity_Pool.INITIALS = Current_MSP_Pool.Initials "
+    strSQL = strSQL & "WHERE (((Clarity_Pool.INITIALS) not Like '*[0-9]*') AND ((Current_MSP_Pool.Initials) Is Null)AND ((Clarity_Pool.OBSOLETE) Is Null))"
+    strSQL = strSQL & " AND (Clarity_Pool.INITIALS) Like '" & Underscore & "*' ; "
+
+  Case 6
+  'Update New New_MSP_Pool Name to Clarity_Pool Name
+    strSQL = "UPDATE Clarity_Pool INNER JOIN New_MSP_Pool ON Clarity_Pool.INITIALS = "
+    strSQL = strSQL & "New_MSP_Pool.Initials SET New_MSP_Pool.Name = [Clarity_Pool].[Name] "
+    strSQL = strSQL & "WHERE (((Clarity_Pool.INITIALS) Like '*[0-9]*') AND "
+    strSQL = strSQL & "((New_MSP_Pool.Name)<>[Clarity_Pool].[Name]) AND "
+    strSQL = strSQL & "((Clarity_Pool.OBSOLETE) Is Null));"
+
+  Case 7
+  'Update New Vendor from Clarity into New_MSP_Pool
+    strSQL = "UPDATE New_MSP_Pool INNER JOIN Pool_REI_EmpData ON New_MSP_Pool.EmpNum = Pool_REI_EmpData.EmpNum "
+    strSQL = strSQL & "SET New_MSP_Pool.Name = Pool_REI_EmpData.Resource_Name "
+
+  Case 8
+  'Update Employee Number from Clarity in case Employee changes from Contractor to FTE
+    strSQL = "UPDATE New_MSP_Pool INNER JOIN Clarity_Pool ON New_MSP_Pool.EmpNum = Clarity_Pool.EmpNum "
+    strSQL = strSQL & "SET New_MSP_Pool.Initials = Clarity_Pool.Initials "
+
+  Case 9
+  'Update Vendor for Employees, not Roles
+    strSQL = "UPDATE New_MSP_Pool INNER JOIN Clarity_Pool ON New_MSP_Pool.EmpNum = Clarity_Pool.EmpNum "
+    strSQL = strSQL & "SET New_MSP_Pool.Vendor = Clarity_Pool.Vendor "
+    strSQL = strSQL & "WHERE (New_MSP_Pool.Initials) Like 'r[0-9]*' Or (New_MSP_Pool.Initials) Like 'c[0-9]*' "
+
+  Case 10
+  'Update Obsolete Based upon Terminated Date in REI
+    strSQL = "UPDATE New_MSP_Pool INNER JOIN Pool_REI_EmpData ON New_MSP_Pool.EmpNum = Pool_REI_EmpData.EmpNum "
+    strSQL = strSQL & "SET New_MSP_Pool.Obsolete = 'Y' WHERE (New_MSP_Pool.Obsolete Not Like 'Y' AND " & _
+    "Pool_REI_EmpData.Terminated Not Like '1/1/1700' AND " & _
+    "Pool_REI_EmpData.Terminated < Now()); "
+
+  Case Else
+    strSQL = ""
+
+End Select
+
+If strSQL = "" Then
+  'Do Nothing
+Else
+  DoCmd.RunSQL strSQL
+End If
+
+Exit_ExecuteSQL:
+  Exit Sub
+
+Err_ExecuteSQL:
+  MsgBox Err.Description
+  Resume Exit_ExecuteSQL
+End Sub
+
+Private Sub cmdClose_Click()
+On Error GoTo Err_cmdClose_Click
+
+    DoCmd.Close
+
+Exit_cmdClose_Click:
+    Exit Sub
+
+Err_cmdClose_Click:
+    MsgBox Err.Description
+    Resume Exit_cmdClose_Click
+    
+End Sub
+
+Private Sub cmdExport_Click()
+On Error GoTo Err_cmdExport_Click
+Dim strFilePath As String, strSQL As String
+
+'If MsgBox("Ready to Export New MSP Data", vbQuestion + vbYesNo + _
+  vbDefaultButton2, "Export Data") = vbNo Then
+'  Exit Sub
+'End If
+
+strSQL = "Go to Export folder.  Then click Save."
+strFilePath = fctGetPath(strSQL)
+
+If strFilePath = "" Then
+  MsgBox "Export Canceled by User", vbInformation, "Cancel Export"
+  Exit Sub
+End If
+
+DoCmd.TransferSpreadsheet acExport, acSpreadsheetTypeExcel9, _
+  "qsNew_MSP_Pool", strFilePath & "New_MSP_Pool.xls", True
+  
+MsgBox "Export of " & "New_MSP_Pool.xls" & Chr(13) & "To " _
+  & strFilePath & " Completed", vbInformation, "Export Data"
+
+Exit_cmdExport_Click:
+    Exit Sub
+
+Err_cmdExport_Click:
+    MsgBox Err.Description
+    Resume Exit_cmdExport_Click
+    
+End Sub
+
+Private Sub cmdProcessPool_Click()
+On Error GoTo Err_cmdProcessPool_Click
+
+Dim i As Integer
+If pubUserID = "" Then
+  MsgBox "Log On Required", vbCritical, "Log On Required"
+  Form_frmGetInput.Visible = True
+  Exit Sub
+End If
+
+If pubREIUserID = "" Then
+  MsgBox "Log On Required", vbCritical, "Log On Required"
+  Form_frmGetInput.Visible = True
+  Exit Sub
+End If
+
+DoCmd.SetWarnings False
+'Clear Tables
+  DeleteAllRecords ("New_MSP_Pool")
+  DeleteAllRecords ("Clarity_Pool")
+  DeleteAllRecords ("Current_MSP_Pool")
+  DeleteAllRecords ("Clarity_Res_View")
+
+'Import Data
+  Call fctRunImport
+
+'Append MSP Pool and Clarity to New_MSP_Pool
+  For i = 1 To 10
+    Call ExecuteSQL(i)
+  Next i
+
+  Me.Refresh
+
+DoCmd.SetWarnings True
+
+MsgBox "Process Pool Completed", vbInformation, "Process Pool"
+
+Exit_cmdProcessPool_Click:
+    DoCmd.Close acForm, "frmMeter"
+    Exit Sub
+
+Err_cmdProcessPool_Click:
+    MsgBox Err.Description
+    Resume Exit_cmdProcessPool_Click
+    DoCmd.SetWarnings True
+    
+End Sub
+
+Private Sub cmdResearch_Click()
+On Error GoTo Err_cmdResearch_Click
+
+    Dim stDocName As String
+    Dim stLinkCriteria As String
+
+    stDocName = "Pool_frmResearch"
+    DoCmd.OpenForm stDocName, , , stLinkCriteria
+
+Exit_cmdResearch_Click:
+    Exit Sub
+
+Err_cmdResearch_Click:
+    MsgBox Err.Description
+    Resume Exit_cmdResearch_Click
+    
+End Sub
+
+Private Sub Form_Open(Cancel As Integer)
+If pubUserID = "" Then
+  DoCmd.OpenForm "frmGetInput", , , , , acDialog
+End If
+End Sub

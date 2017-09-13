@@ -1,0 +1,431 @@
+Option Compare Database
+Option Explicit
+Public pubUserID As String
+Public pubUserPwd As String
+Public pubServer As String
+Public pubREIUserID As String
+Public pubREIUserPwd As String
+Public pubREIServer As String
+Public Const Underscore = "_"
+'
+
+Function fctImportPoolData() As Boolean
+Dim objProject As MSProject.Application
+Dim fsoPlanDir As Office.FileSearch
+Dim prjPlan As MSProject.Project
+Dim resPlanResource As MSProject.Resource
+Dim dbActive As DAO.Database, rstTable As DAO.Recordset
+Dim booProjNotOpen As Boolean, strFilePath As String, strDBPath As String, strFileName As String
+Dim strSQL As String, strCaption As String, intCountPlanCnt As Integer, intTotalPlanCnt As Integer
+Dim intItemCnt As Integer, intPathLength As Integer
+Dim StrText As String 'Hold the Employee number or Role info trim off r or c
+
+On Error GoTo fctImportPoolDataErr
+fctImportPoolData = False
+DoCmd.SetWarnings False
+    
+'METER TEXT
+DoCmd.OpenForm "frmMeter"
+strCaption = "Now being imported: Pool Data"
+Forms!frmMeter!lblProgress.Caption = strCaption
+Forms!frmMeter.Requery
+DoEvents
+    
+'GET PLAN LOCATION
+strSQL = "Go the folder with the 1 Pool to import.  Then click Save."
+strFilePath = fctGetPath(strSQL)
+
+'SET VARIABLES
+booProjNotOpen = False
+intItemCnt = 0
+'set the path variable that are need for the filesearch
+strDBPath = CurrentProject.Path
+intPathLength = Len(strFilePath)
+'set the database object
+Set dbActive = CurrentDb
+'open the filesearch object and set its complements
+Set fsoPlanDir = Application.FileSearch
+fsoPlanDir.NewSearch
+fsoPlanDir.LookIn = strFilePath
+fsoPlanDir.FileName = "*.mpp"
+'open the msproject object and set its complements
+'Set objProject = GetObject(, MSProject.Application)
+If objProject Is Nothing Then
+    booProjNotOpen = True
+    Set objProject = New MSProject.Application
+End If
+objProject.Visible = False
+objProject.DisplayAlerts = False
+objProject.DisplayWizardErrors = False
+
+'STEP THRU THE PLANS
+If fsoPlanDir.Execute(SortBy:=msoSortByFileName, SortOrder:=msoSortOrderAscending) >= 1 Then
+    For intCountPlanCnt = 1 To fsoPlanDir.FoundFiles.Count
+        strFileName = fsoPlanDir.FoundFiles(intCountPlanCnt)
+        intTotalPlanCnt = fsoPlanDir.FoundFiles.Count
+        'OPEN PROJECT PLAN FILE
+        objProject.FileOpen strFileName, , , , , , , , , , , pjDoNotOpenPool
+        'the next line has to be here to reset each project so that saturday is the week start day
+        Set prjPlan = objProject.ActiveProject
+        
+        'STEP THRU CURRENT PLAN'S RESOURCES
+        For Each resPlanResource In prjPlan.Resources
+            'RETRIEVE DATA INTO Pool_MSP_Pool from MSP RESOURCES COLLECTION
+            Set rstTable = dbActive.OpenRecordset("Current_MSP_Pool", dbOpenDynaset)
+            rstTable.AddNew
+            rstTable!ID = resPlanResource.ID ' resource ID as defined by project
+            rstTable!Name = resPlanResource.Name
+            rstTable!Initials = resPlanResource.Initials
+            'Added EmpNum
+            If (Len(resPlanResource.Initials) = 7 And (Left(resPlanResource.Initials, 1) = "r" Or Left(resPlanResource.Initials, 1) = "c")) Then
+                StrText = Right(resPlanResource.Initials, 6)
+            ElseIf Left(resPlanResource.Initials, 1) = Underscore Then
+                StrText = resPlanResource.Initials
+            Else
+                StrText = ""
+            End If
+            rstTable!EmpNum = StrText
+            rstTable!Obsolete = resPlanResource.Text27
+            rstTable!Vendor = resPlanResource.Text15
+            rstTable.Update
+            rstTable.Close
+        Next resPlanResource
+        objProject.FileClose pjDoNotSave
+    Next intCountPlanCnt
+End If
+    
+'Clean Up
+If booProjNotOpen = True Then
+    objProject.Application.Quit
+End If
+Set objProject = Nothing
+Set fsoPlanDir = Nothing
+Set prjPlan = Nothing
+Set resPlanResource = Nothing
+Set dbActive = Nothing
+Set rstTable = Nothing
+'DoCmd.Close acForm, "frmMeter"
+fctImportPoolData = True
+
+Exit Function
+    
+fctImportPoolDataErr:
+    'Occasionally there will be a blank task which
+    If Err = 91 Then
+        Resume Next
+    'Err 429 occurs if Project isn't already open and we want to track that so it
+    'isn't closed when this is done since only one instance of project can be open on
+    'a machine - this assumes it is open for a reason and the user wouldn't
+    'want it closed
+    ElseIf Err = 429 Then
+        Resume Next
+    'this next resume next is becauseTesting errors and stops processing because
+    'of its cant find file error that we cannot get fixed for political reasons
+    ElseIf Err = -2147418111 Then
+        Resume Next
+    ElseIf Err = 92 Then
+        Resume Next
+    Else
+        'clean up
+        If booProjNotOpen = True Then
+            objProject.Application.Quit
+        End If
+        Set objProject = Nothing
+        Set fsoPlanDir = Nothing
+        Set prjPlan = Nothing
+        Set resPlanResource = Nothing
+        Set dbActive = Nothing
+        Set rstTable = Nothing
+        DoCmd.Close acForm, "Pool_frmMeter"
+        'Error Message
+        fctErrMsg ("fctImportProjectData")
+        Exit Function
+    End If
+        
+End Function
+
+Function fctImportClarityData()
+Dim OraSession, OraDatabase, osRecord, osRecordSet
+Dim dbActive As DAO.Database
+Dim rstEmpRole As DAO.Recordset
+Dim strSQL As String, strEmpRole As String, strCaption As String, strUserIDPwd As String
+Dim StrText As String 'Hold Employee number and parse
+
+On Err GoTo fctImportClarityDataErr
+strUserIDPwd = pubUserID & "/" & pubUserPwd
+
+fctImportClarityData = False
+
+'Set it so unnecessary sysmessages don't pop up
+DoCmd.SetWarnings False
+ 
+'METER TEXT
+DoCmd.OpenForm "frmMeter"
+strCaption = "Now being imported: Clarity Role Data"
+Forms!frmMeter!lblProgress.Caption = strCaption
+Forms!frmMeter.Requery
+DoEvents
+
+ 'delete the records from Clarity_Pool
+ DeleteAllRecords ("Clarity_Pool")
+
+'sql statement provided by Robert Bondaruk
+'strSQL = "SELECT Initials, Name, Obsolete FROM ("
+'strSQL = strSQL & "SELECT   a.unique_name as Initials, a.first_name || ' ' || a.last_name as Name, "
+'strSQL = strSQL & "CASE WHEN a.date_of_termination > SYSDATE OR a.date_of_termination IS NULL "
+'strSQL = strSQL & " THEN NULL Else 'Y' END AS Obsolete, c.prisrole "
+'strSQL = strSQL & "FROM SRM_RESOURCES a, PRJ_RESOURCES c, CMN_LOOKUPS b "
+'strSQL = strSQL & "WHERE a.person_type = b.id AND a.id = c.prid and     (a.unique_name like 'r%' OR a.unique_name like 'c%') "
+'strSQL = strSQL & "AND NOT  a.unique_name = 'r123456' AND NOT  a.unique_name like 'csk%' and not  a.unique_name = 'r1' "
+'strSQL = strSQL & "AND (a.date_of_termination IS NULL OR a.date_of_termination > SYSDATE) "
+'strSQL = strSQL & "union all "
+'strSQL = strSQL & "SELECT   a.unique_name as Initials, a.full_name as Name, CASE WHEN a.is_active = 1 "
+'strSQL = strSQL & "THEN NULL ELSE 'Y' END AS Obsolete, c.prisrole FROM SRM_RESOURCES a, PRJ_RESOURCES c, CMN_LOOKUPS b "
+'strSQL = strSQL & "WHERE a.person_type = b.id AND a.id = c.prid AND c.prisrole = 1 AND a.resource_type = 0) "
+'strSQL = strSQL & "order by prisrole, Name"
+
+'20070124 sas
+strSQL = "SELECT resfacts.resource_code as Initials, TRIM(resfacts.first_name || ' ' || resfacts.last_name) as Name " & _
+            "FROM niku.nbi_resource_current_facts resfacts " & _
+            "WHERE (NOT resfacts.resource_code = 'r123456') AND NOT (resfacts.resource_code like 'csk%') " & _
+            "AND NOT (resfacts.resource_code = 'r1') AND (is_active = 1) " & _
+            "GROUP BY resfacts.resource_code, resfacts.first_name, resfacts.last_name "
+
+'connect to the Clarity db
+'MsgBox "string = " & strSQL
+Set OraSession = CreateObject("OracleInProcServer.XOraSession")
+
+'Set OraDatabase = OraSession.DbOpenDatabase("p073.regence.com", strUserIDPwd, CInt(0))
+'Set Server and User Password with Global variables vl 2007-02-01
+Set OraDatabase = OraSession.DbOpenDatabase(pubServer, strUserIDPwd, CInt(0))
+
+'Pull the data from Clarity
+Set osRecordSet = OraDatabase.DbCreateDynaset(strSQL, CInt(0))
+
+'open up the table where the Dept_Codes from REI should go
+Set rstEmpRole = CurrentDb.OpenRecordset("Clarity_Pool")
+
+'walk thru the REI recordset adding each record to the Access table
+Do Until osRecordSet.EOF
+    With rstEmpRole
+        .AddNew
+        !Initials = osRecordSet!Initials
+        'Added EmpNum
+        If (Len(osRecordSet!Initials) = 7 And (Left(osRecordSet!Initials, 1) = "r" Or Left(osRecordSet!Initials, 1) = "c") _
+        ) Then
+            StrText = Right(osRecordSet!Initials, 6)
+        ElseIf Left(osRecordSet!Initials, 1) = Underscore Then
+            StrText = osRecordSet!Initials
+        Else
+            StrText = ""
+        End If
+        !EmpNum = StrText
+        !Name = osRecordSet!Name
+  '      !Obsolete = osRecordSet!Obsolete
+        .Update
+    End With
+    osRecordSet.MoveNext
+Loop
+
+'CleanUp
+Set osRecordSet = Nothing
+Set osRecord = Nothing
+Set OraDatabase = Nothing
+Set OraSession = Nothing
+Set rstEmpRole = Nothing
+'DoCmd.Close acForm, "frmMeter"
+
+fctImportClarityData = True
+Exit Function
+
+fctImportClarityDataErr:
+    'CleanUp
+    Set osRecordSet = Nothing
+    Set osRecord = Nothing
+    Set OraDatabase = Nothing
+    Set OraSession = Nothing
+    Set rstEmpRole = Nothing
+    'Error Message
+    fctErrMsg ("fctImportClarityData")
+    Exit Function
+    
+End Function
+
+Function Pool_fctGetREIData() As Boolean
+'
+Dim OraSession, OraDatabase, osRecord, osRecordSet
+Dim dbActive As DAO.Database
+Dim rstEmpNum As DAO.Recordset
+Dim strSQL As String, strEmpNum As String, strCaption As String
+Dim strUserIDPwd As String
+
+On Error GoTo fctGetREIDataErr
+Pool_fctGetREIData = False
+strUserIDPwd = pubREIUserID & "/" & pubREIUserPwd
+
+'Set it so unnecessary sysmessages don't pop up
+DoCmd.SetWarnings False
+ 
+'METER TEXT
+DoCmd.OpenForm "frmMeter"
+strCaption = "Now being imported: REI Data"
+Forms!frmMeter!lblProgress.Caption = strCaption
+Forms!frmMeter.Requery
+DoEvents
+
+'delete the existing data
+strSQL = "DELETE * FROM Pool_REI_EmpData"
+DoCmd.RunSQL strSQL
+
+'connect to the REI db
+Set OraSession = CreateObject("OracleInProcServer.XOraSession")
+'Set OraDatabase = OraSession.DbOpenDatabase("q103.regence.com", strUserIDPwd, CInt(0))
+'Use Global Variable to set Server and Password vl 2007-02-01
+Set OraDatabase = OraSession.DbOpenDatabase(pubREIServer, strUserIDPwd, CInt(0))
+
+
+    'create the query to run on REI and run it creating a recordset
+'    strSQL = "SELECT INITCAP(employee.first_name || ' ' || employee.last_name) resource_name " & _
+'                    ", employee.EMP_ID EmpNum " & _
+'                    ", employee.DEPT_CODE DeptCode " & _
+'                    ", employee.TERM_DATE Terminated " & _
+'                    ", employee.DIVISION " & _
+'                    ", employee.work_stat_code STATUS " & _
+'                    "FROM rei.emp_vw@rei employee "
+    
+    strSQL = "SELECT CASE WHEN trim(employee.mid_init) is null THEN INITCAP(employee.first_name || ' ' || employee.last_name) " & _
+             "ELSE INITCAP(employee.first_name || ' ' || employee.mid_init || ' ' || employee.last_name) END resource_name " & _
+                    ", employee.EMP_ID EmpNum " & _
+                    ", employee.DEPT_CODE DeptCode " & _
+                    ", employee.TERM_DATE Terminated " & _
+                    ", employee.DIVISION " & _
+                    ", employee.work_stat_code STATUS " & _
+                    "FROM rei.emp_vw@rei employee "
+
+    
+    Set osRecordSet = OraDatabase.DbCreateDynaset(strSQL, CInt(0))
+    
+    'open up the table where the data from REI should go
+    Set rstEmpNum = CurrentDb.OpenRecordset("Pool_REI_EmpData")
+
+    'walk thru the REI recordset adding each record to the Access table
+    Do Until osRecordSet.EOF
+        With rstEmpNum
+            .AddNew
+            !Resource_Name = osRecordSet!Resource_Name
+            !EmpNum = osRecordSet!EmpNum
+            !Dept_Code = osRecordSet!DeptCode
+            !Terminated = osRecordSet!Terminated
+            !DIVISION = osRecordSet!DIVISION
+            .Update
+        End With
+        osRecordSet.MoveNext
+    Loop
+
+
+    'add the EmpNum from the Resource Table so we have the R and C preface
+    strSQL = "UPDATE Clarity_Pool, Pool_REI_EmpData SET Clarity_Pool.OBSOLETE = 'Y' " & _
+                    "WHERE (((Pool_REI_EmpData.EmpNum)=Right([INITIALS],6)) AND ((Pool_REI_EmpData.Terminated)>Date()));"
+    DoCmd.RunSQL strSQL
+
+'cleanup
+Set osRecordSet = Nothing
+Set osRecord = Nothing
+Set OraDatabase = Nothing
+Set OraSession = Nothing
+Set rstEmpNum = Nothing
+Set dbActive = Nothing
+
+Pool_fctGetREIData = True
+
+Exit Function
+
+fctGetREIDataErr:
+    'cleanup
+    Set osRecordSet = Nothing
+    Set osRecord = Nothing
+    Set OraDatabase = Nothing
+    Set OraSession = Nothing
+    Set rstEmpNum = Nothing
+    Set dbActive = Nothing
+    'Error Message
+    fctErrMsg ("fctGetREIData")
+    Exit Function
+
+End Function
+
+Function fctImportClarityResData() As Boolean
+Dim OraSession, OraDatabase, osRecord, osRecordSet, dbActive As DAO.Database, rstEmpRole As DAO.Recordset
+Dim strSQL As String, strEmpRole As String, strCaption As String, strUserIDPwd As String
+
+On Err GoTo fctImportClarityResDataErr
+strUserIDPwd = pubUserID & "/" & pubUserPwd
+
+fctImportClarityResData = False
+
+'Set it so unnecessary sysmessages don't pop up
+DoCmd.SetWarnings False
+ 
+'METER TEXT
+DoCmd.OpenForm "frmMeter"
+strCaption = "Now being imported: Clarity Vendor Data"
+Forms!frmMeter!lblProgress.Caption = strCaption
+Forms!frmMeter.Requery
+DoEvents
+ 
+ 'delete the records from Clarity_Pool
+ DeleteAllRecords ("Clarity_Res_View")
+ 
+
+'20070124 sas
+strSQL = "select res.resource_id, res.vendor_name from niku.trg_mv_resource res "
+
+'connect to the Clarity db
+'MsgBox "string = " & strSQL
+Set OraSession = CreateObject("OracleInProcServer.XOraSession")
+
+'Set OraDatabase = OraSession.DbOpenDatabase("p073.regence.com", strUserIDPwd, CInt(0))
+'Set Server and User Password with Global variables vl 2007-02-01
+Set OraDatabase = OraSession.DbOpenDatabase(pubServer, strUserIDPwd, CInt(0))
+
+'Pull the data from Clarity
+Set osRecordSet = OraDatabase.DbCreateDynaset(strSQL, CInt(0))
+
+'open up the table where the Dept_Codes from REI should go
+Set rstEmpRole = CurrentDb.OpenRecordset("Clarity_Res_View")
+
+'walk thru the REI recordset adding each record to the Access table
+Do Until osRecordSet.EOF
+    With rstEmpRole
+        .AddNew
+        !Resource_ID = osRecordSet!Resource_ID
+        '!Resource_Name = osRecordSet!Name
+        !Vendor = osRecordSet!Vendor_Name
+        .Update
+    End With
+    osRecordSet.MoveNext
+Loop
+
+'CleanUp
+Set osRecordSet = Nothing
+Set osRecord = Nothing
+Set OraDatabase = Nothing
+Set OraSession = Nothing
+Set rstEmpRole = Nothing
+'DoCmd.Close acForm, "frmMeter"
+
+fctImportClarityResData = True
+Exit Function
+
+fctImportClarityResDataErr:
+    'CleanUp
+    Set osRecordSet = Nothing
+    Set osRecord = Nothing
+    Set OraDatabase = Nothing
+    Set OraSession = Nothing
+    Set rstEmpRole = Nothing
+    'Error Message
+    fctErrMsg ("fctImportClarityResData")
+    Exit Function
+    
+End Function

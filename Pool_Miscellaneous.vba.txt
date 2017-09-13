@@ -1,0 +1,183 @@
+Option Compare Database
+Option Explicit
+Function Pool_fctGetPath(sFileName As String) As String
+'***************
+'Uses FileDialog to allow the user to set the directory to save reports to
+'Called from fctAutoBuildReports
+'***************
+
+Dim dlgSaveAs As FileDialog
+Dim strPath As String
+
+Set dlgSaveAs = Application.FileDialog(msoFileDialogSaveAs)
+dlgSaveAs.InitialFileName = sFileName
+
+If dlgSaveAs.Show = -1 Then
+    strPath = dlgSaveAs.SelectedItems(1)
+    strPath = Left(strPath, InStrRev(strPath, "\"))
+    Pool_fctGetPath = strPath
+End If
+
+'Cleanup
+Set dlgSaveAs = Nothing
+End Function
+
+Function Pool_fctResearch()
+'On Error GoTo fctResearchErr
+
+Dim OraSession
+Dim OraDatabase
+Dim osRecord
+Dim osRecordSet
+Dim rstREIData As DAO.Recordset
+Dim rstResearch As DAO.Recordset
+Dim dbActive As DAO.Database
+Dim strFName As String
+Dim strLName As String
+Dim strEmpNum As String
+Dim strSQL As String
+Dim strWHERE As String
+Dim intREICnt As Integer
+Dim intPoolCnt As Integer
+Dim strUserIDPwd As String
+
+strUserIDPwd = pubREIUserID & "/" & pubREIUserPwd
+
+Pool_fctResearch = True
+DoCmd.SetWarnings False
+
+DoCmd.OpenForm "Pool_frmSearching"
+DoEvents
+
+'Build the WHERE clause
+strWHERE = ""
+If Len(Forms!Pool_frmResearch!Fname) > 0 Then
+    strFName = " ((VU1.FIRST_NAME like UPPER ('%" & Forms!Pool_frmResearch!Fname & "%'))"
+    strFName = strFName & " OR (VU1.NickName like UPPER ('%" & Forms!Pool_frmResearch!Fname & "%')))"
+    strWHERE = strFName
+End If
+
+If Len(Forms!Pool_frmResearch!Lname) > 0 Then
+    If Len(strWHERE) > 0 Then
+        strLName = " AND VU1.LAST_NAME like UPPER ('%" & Forms!Pool_frmResearch!Lname & "%')"
+    Else
+        strLName = " VU1.LAST_NAME like UPPER ('%" & Forms!Pool_frmResearch!Lname & "%')"
+    End If
+    strWHERE = strWHERE & strLName
+End If
+If Len(Forms!Pool_frmResearch!EmpNumber) > 0 Then
+    If Len(strWHERE) > 0 Then
+        strEmpNum = " AND VU1.EMP_ID like UPPER ('%" & Forms!Pool_frmResearch!EmpNumber & "%')"
+    Else
+        strEmpNum = " VU1.EMP_ID like UPPER ('%" & Forms!Pool_frmResearch!EmpNumber & "%')"
+    End If
+    strWHERE = strWHERE & strEmpNum
+End If
+
+'Finish the WHERE clause EXIT if there is no criteria to search for
+If Len(strWHERE) > 0 Then
+    strWHERE = " AND " & strWHERE               '& ";" errors when have ; at the end
+Else
+    MsgBox "You must enter some criteria to search for!"
+    Exit Function
+End If
+
+'strSQL = "SELECT  VU1.EMP_ID EmpNum, INITCAP(VU1.FIRST_NAME) ||' '|| InitCap(VU1.LAST_NAME) ResName" & _
+'                ", vu1.nickname, vu1.Date_hired, DEPT.NAME Dept, JOBTYPE.TITLE JobTitle, VU1.WORK_STAT_CODE WorkStatCode" & _
+'                ", WORKSTATUS.DESCRIPTION WorkStatus, VU1.TERM_DATE Terminated, VU1.DIVISION Division" & _
+'                ", VU1.LOC_CODE Location, VU1.WORK_STATE State" & _
+'                ", INITCAP(super.FIRST_NAME) ||' '|| InitCap(super.LAST_NAME) Supervisor " & _
+'                "FROM REI.EMP_VW@REI VU1 " & _
+'                "left join rei.emp_vw@rei super on vu1.SUPV_EMP_ID = super.emp_id " & _
+'                "LEFT JOIN REI.DEPARTMENTS@REI DEPT ON VU1.DEPT_CODE = DEPT.CODE " & _
+'                "LEFT JOIN REI.job_types@REI JOBTYPE ON VU1.JOB_CODE = JOBTYPE.CODE " & _
+'                "LEFT JOIN REI.work_statuses@REI WORKSTATUS ON VU1.WORK_STAT_CODE = WORKSTATUS.CODE"
+
+'20071225 SAS to fix new security - loggin directly to rei p004
+strSQL = "SELECT  VU1.EMP_ID EmpNum " & _
+", CASE WHEN trim(VU1.mid_init) is null THEN INITCAP(VU1.FIRST_NAME) ||' '|| InitCap(VU1.LAST_NAME)" & _
+" ELSE INITCAP(VU1.first_name || ' ' || VU1.mid_init || ' ' || VU1.last_name) END ResName   " & _
+", vu1.nickname " & _
+", vu1.Date_hired " & _
+", DEPT.NAME Dept " & _
+", JOBTYPE.TITLE JobTitle " & _
+", VU1.WORK_STAT_CODE WorkStatCode " & _
+", WORKSTATUS.DESCRIPTION WorkStatus " & _
+", VU1.TERM_DATE Terminated " & _
+", VU1.DIVISION Division " & _
+", VU1.LOC_CODE Location " & _
+", VU1.WORK_STATE State " & _
+", INITCAP(super.FIRST_NAME) ||' '|| InitCap(super.LAST_NAME) Supervisor " & _
+"FROM rei.EMP_VW VU1, rei.emp_vw super, rei.departments dept, rei.job_types jobtype, rei.work_statuses workstatus " & _
+"WHERE vu1.SUPV_EMP_ID = super.emp_id (+) " & _
+"AND VU1.DEPT_CODE = DEPT.CODE (+) " & _
+"AND VU1.JOB_CODE = JOBTYPE.CODE (+) " & _
+"AND VU1.WORK_STAT_CODE = WORKSTATUS.CODE (+) "
+
+strSQL = strSQL & strWHERE
+
+'connect to the REI db
+Set OraSession = CreateObject("OracleInProcServer.XOraSession")
+'Set OraDatabase = OraSession.DbOpenDatabase("q103.regence.com", strUserIDPwd, CInt(0))
+'Set OraDatabase = OraSession.DbOpenDatabase("p004.regence.com", strUserIDPwd, CInt(0))
+Set OraDatabase = OraSession.DbOpenDatabase(pubREIServer, strUserIDPwd, CInt(0))  'TRE 18Feb2009
+Set osRecordSet = OraDatabase.DbCreateDynaset(strSQL, CInt(0))
+
+'delete the existing data
+strSQL = "DELETE * FROM Pool_tblResearch"
+DoCmd.RunSQL strSQL
+
+'open up the table tblResearch to stuff data into
+Set dbActive = CurrentDb
+Set rstResearch = dbActive.OpenRecordset("Pool_tblResearch")
+    Do Until osRecordSet.EOF
+        With rstResearch
+            .AddNew
+            !EmpNum = osRecordSet!EmpNum
+            !ResName = osRecordSet!ResName
+            !NickName = osRecordSet!NickName
+            !DateHired = osRecordSet!Date_hired
+            !Dept = osRecordSet!Dept
+            !JobTitle = osRecordSet!JobTitle
+            !WorkStatCode = osRecordSet!WorkStatCode
+            !WorkStatus = osRecordSet!WorkStatus
+            !Terminated = osRecordSet!Terminated
+            !DIVISION = osRecordSet!DIVISION
+            !Location = osRecordSet!Location
+            !State = osRecordSet!State
+            !Supervisor = osRecordSet!Supervisor
+            .Update
+        End With
+        osRecordSet.MoveNext
+    Loop
+    
+Forms!Pool_frmResearch!frmResearchSub.Requery
+Forms!Pool_frmResearch!frmResearchSub2.Form.RecordSource = "Pool_qryMSP_Pool"
+Forms!Pool_frmResearch!frmResearchSub2.Requery
+
+'fill status label
+intPoolCnt = Forms!Pool_frmResearch!frmResearchSub2.Form.RecordsetClone.RecordCount
+intREICnt = osRecordSet.RecordCount
+Forms!Pool_frmResearch!lblStatus = "Records returned:  Pool:  " & intPoolCnt & "    REI:  " & intREICnt
+
+'clean up
+Set rstResearch = Nothing
+Set osRecordSet = Nothing
+Set OraSession = Nothing
+Set OraDatabase = Nothing
+
+Pool_fctResearch = True
+DoCmd.Close acForm, "Pool_frmSearching"
+Exit Function
+
+fctResearchErr:
+    'clean up
+    Set rstResearch = Nothing
+    Set osRecordSet = Nothing
+    Set OraSession = Nothing
+    Set OraDatabase = Nothing
+    'Error Message
+    fctErrMsg ("fctResearch")
+    Exit Function
+        
+End Function
